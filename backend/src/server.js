@@ -122,6 +122,25 @@ const safeParse = (value, fallback) => {
   }
 };
 
+const createRateLimiter = ({ windowMs, maxRequests }) => {
+  const requests = new Map();
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    const recent = (requests.get(key) || []).filter((ts) => now - ts < windowMs);
+
+    if (recent.length >= maxRequests) {
+      return res.status(429).json({ message: 'Too many requests. Please try again later.' });
+    }
+
+    recent.push(now);
+    requests.set(key, recent);
+    next();
+  };
+};
+
+const fileMutationLimiter = createRateLimiter({ windowMs: 60 * 1000, maxRequests: 30 });
+
 const parseCustomer = (row, req) => {
   const baseUrl = `${req.protocol}://${req.get('host')}`;
   const photoUrl = row.photo_path ? `${baseUrl}/${row.photo_path.replace(/\\/g, '/')}` : null;
@@ -194,7 +213,7 @@ app.get('/api/customers/:id', async (req, res, next) => {
   }
 });
 
-app.post('/api/customers', upload.fields([{ name: 'photo', maxCount: 1 }, { name: 'documents', maxCount: 10 }]), async (req, res, next) => {
+app.post('/api/customers', fileMutationLimiter, upload.fields([{ name: 'photo', maxCount: 1 }, { name: 'documents', maxCount: 10 }]), async (req, res, next) => {
   try {
     const { name, date_of_birth, contact_info, spouse_name, children_details, blood_relations, height, weight, insurance_policy } = req.body;
 
@@ -246,7 +265,7 @@ app.post('/api/customers', upload.fields([{ name: 'photo', maxCount: 1 }, { name
   }
 });
 
-app.put('/api/customers/:id', upload.fields([{ name: 'photo', maxCount: 1 }, { name: 'documents', maxCount: 10 }]), async (req, res, next) => {
+app.put('/api/customers/:id', fileMutationLimiter, upload.fields([{ name: 'photo', maxCount: 1 }, { name: 'documents', maxCount: 10 }]), async (req, res, next) => {
   try {
     const existing = await dbGet('SELECT * FROM customers WHERE id = ?', [req.params.id]);
     if (!existing) return res.status(404).json({ message: 'Customer not found' });
@@ -311,7 +330,7 @@ app.put('/api/customers/:id', upload.fields([{ name: 'photo', maxCount: 1 }, { n
   }
 });
 
-app.delete('/api/customers/:id/documents/:docId', async (req, res, next) => {
+app.delete('/api/customers/:id/documents/:docId', fileMutationLimiter, async (req, res, next) => {
   try {
     const doc = await dbGet('SELECT * FROM documents WHERE id = ? AND customer_id = ?', [req.params.docId, req.params.id]);
     if (!doc) return res.status(404).json({ message: 'Document not found' });
@@ -324,7 +343,7 @@ app.delete('/api/customers/:id/documents/:docId', async (req, res, next) => {
   }
 });
 
-app.delete('/api/customers/:id', async (req, res, next) => {
+app.delete('/api/customers/:id', fileMutationLimiter, async (req, res, next) => {
   try {
     const customer = await dbGet('SELECT * FROM customers WHERE id = ?', [req.params.id]);
     if (!customer) return res.status(404).json({ message: 'Customer not found' });
